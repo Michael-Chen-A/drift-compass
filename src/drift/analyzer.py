@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .collector import MetricSeries, PipelineRun, Sample, StageTiming
+from .detector import LogEntry, PipelineRun, Sample, StageTiming
 
 
 @dataclass
@@ -79,7 +79,7 @@ class RollingWindow:
         return len(self.values) >= self.capacity
 
 
-class AnomalyDetector:
+class DriftReport:
     """Detects anomalies in pipeline metrics using statistical methods.
 
     Supports three detection strategies:

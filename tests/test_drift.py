@@ -1,4 +1,4 @@
-"""Tests for Sentinel telemetry collector and anomaly detection."""
+"""Tests for Drift telemetry detector and anomaly detection."""
 
 import json
 import tempfile
@@ -7,30 +7,30 @@ from pathlib import Path
 
 import pytest
 
-from sentinel.collector import (
+from drift.detector import (
     ExportFormat,
     JSONExporter,
     MetricKind,
-    MetricSeries,
+    LogEntry,
     PipelineRun,
     RetentionPolicy,
     Sample,
     StageTiming,
-    TelemetryCollector,
+    DriftDetector,
 )
-from sentinel.aggregator import (
+from drift.analyzer import (
     AggregationEngine,
-    AnomalyDetector,
+    DriftReport,
     AnomalySignal,
     RollingWindow,
     TrendLine,
 )
-from sentinel.reporter import ReportConfig, ReportGenerator
+from drift.normalizer import ReportConfig, TimezoneNormalizer
 
 
-class TestMetricSeries:
+class TestLogEntry:
     def test_record_and_range(self):
-        s = MetricSeries(name="test_metric", kind=MetricKind.GAUGE, help_text="Test")
+        s = LogEntry(name="test_metric", kind=MetricKind.GAUGE, help_text="Test")
         s.record(1.0, host="a")
         s.record(2.0, host="b")
         s.record(3.0)
@@ -39,7 +39,7 @@ class TestMetricSeries:
         assert [x.value for x in all_vals] == [1.0, 2.0, 3.0]
 
     def test_range_filter(self):
-        s = MetricSeries(name="test", kind=MetricKind.GAUGE, help_text="t")
+        s = LogEntry(name="test", kind=MetricKind.GAUGE, help_text="t")
         s.record(1.0)
         import time
         mid = time.time_ns()
@@ -51,7 +51,7 @@ class TestMetricSeries:
         assert len(filtered) >= 2
 
     def test_stats(self):
-        s = MetricSeries(name="test", kind=MetricKind.GAUGE, help_text="t")
+        s = LogEntry(name="test", kind=MetricKind.GAUGE, help_text="t")
         for v in [1, 2, 3, 4, 5]:
             s.record(float(v))
         stats = s.stats()
@@ -61,7 +61,7 @@ class TestMetricSeries:
         assert stats["max"] == 5.0
 
     def test_quantile(self):
-        s = MetricSeries(name="test", kind=MetricKind.GAUGE, help_text="t")
+        s = LogEntry(name="test", kind=MetricKind.GAUGE, help_text="t")
         for v in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
             s.record(float(v))
         assert s.quantile(0.50) == 5.0
@@ -176,9 +176,9 @@ class TestJSONExporter:
             assert "r1" in content
 
 
-class TestTelemetryCollector:
+class TestConfigDetector:
     def test_record_and_query(self):
-        tc = TelemetryCollector()
+        tc = DriftDetector()
         run = PipelineRun(
             run_id="r1", pipeline_name="ci", repo_slug="a/b",
             branch="main", commit_sha="x", trigger="push",
@@ -191,7 +191,7 @@ class TestTelemetryCollector:
         assert tc.query_runs(conclusion="failure") == []
 
     def test_failure_rate(self):
-        tc = TelemetryCollector()
+        tc = DriftDetector()
         now = datetime.now(timezone.utc)
         for i in range(4):
             tc.record_run(PipelineRun(
@@ -208,7 +208,7 @@ class TestTelemetryCollector:
         assert rates["ci"] == 0.2
 
     def test_register_series_idempotent(self):
-        tc = TelemetryCollector()
+        tc = DriftDetector()
         s1 = tc.register_series("test", MetricKind.GAUGE, "help")
         s2 = tc.register_series("test", MetricKind.GAUGE, "help")
         assert s1 is s2
@@ -230,9 +230,9 @@ class TestRollingWindow:
         assert w.values == [3.0, 4.0, 5.0]
 
 
-class TestAnomalyDetector:
+class TestDriftReport:
     def test_zscore_normal(self):
-        det = AnomalyDetector(zscore_threshold=2.0, window_capacity=10)
+        det = DriftReport(zscore_threshold=2.0, window_capacity=10)
         baseline = [10.0 + i * 0.1 for i in range(20)]
         det.train("test", baseline)
         z, flagged = det.check_zscore("test", 10.5)
@@ -241,14 +241,14 @@ class TestAnomalyDetector:
         assert flagged2
 
     def test_iqr_outlier(self):
-        det = AnomalyDetector(iqr_multiplier=1.5, window_capacity=20)
+        det = DriftReport(iqr_multiplier=1.5, window_capacity=20)
         baseline = list(range(1, 21))
         det.train("test", [float(v) for v in baseline])
         _, flagged = det.check_iqr("test", 100.0)
         assert flagged
 
     def test_empty_runs_no_anomalies(self):
-        det = AnomalyDetector()
+        det = DriftReport()
         signals = det.analyze_runs([])
         assert signals == []
 
@@ -288,7 +288,7 @@ class TestAggregationEngine:
 
 class TestReportGenerator:
     def test_build_summary(self):
-        gen = ReportGenerator()
+        gen = TimezoneNormalizer()
         now = datetime.now(timezone.utc)
         runs = [
             PipelineRun(
@@ -307,7 +307,7 @@ class TestReportGenerator:
         assert summary["stats"]["successful"] == 5
 
     def test_render_markdown(self):
-        gen = ReportGenerator()
+        gen = TimezoneNormalizer()
         summary = {
             "title": "Test Report",
             "generated_at": "2026-06-27T10:00:00Z",
@@ -326,6 +326,6 @@ class TestReportGenerator:
         assert "80.0%" in md
 
     def test_empty_runs(self):
-        gen = ReportGenerator()
+        gen = TimezoneNormalizer()
         summary = gen.build_summary([])
         assert summary["runs"] == 0

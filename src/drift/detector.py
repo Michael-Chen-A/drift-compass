@@ -1,5 +1,5 @@
 """
-Pipeline-aware telemetry collector with multi-backend export.
+Pipeline-aware telemetry detector with multi-backend export.
 
 Collects build duration, stage timing, resource utilization, and failure
 signals from CI pipeline executions. Supports windowed aggregation and
@@ -21,7 +21,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
-logger = logging.getLogger("sentinel.collector")
+logger = logging.getLogger("drift.detector")
 
 
 class MetricKind(Enum):
@@ -51,7 +51,7 @@ class Sample:
 
 
 @dataclass(slots=True)
-class MetricSeries:
+class LogEntry:
     """Named time-series with bounded retention window."""
 
     name: str
@@ -274,10 +274,10 @@ class JSONExporter:
 
 
 class PrometheusExporter:
-    """Exports MetricSeries to Prometheus text format."""
+    """Exports LogEntry to Prometheus text format."""
 
     @staticmethod
-    def render(series_list: List[MetricSeries]) -> str:
+    def render(series_list: List[LogEntry]) -> str:
         lines: List[str] = []
         for s in series_list:
             lines.append(f"# HELP {s.name} {s.help_text}")
@@ -386,7 +386,7 @@ class SQLiteExporter:
 # ——— Collector ———————————————————————————————————————————————————————
 
 
-class TelemetryCollector:
+class DriftDetector:
     """Central telemetry collection and export facade.
 
     Gathers pipeline run records and metric series, buffers them in-memory,
@@ -403,15 +403,15 @@ class TelemetryCollector:
         self.export_formats = list(export_formats) if export_formats else [ExportFormat.JSON]
         self.output_dir = Path(output_dir) if output_dir else Path("telemetry_out")
         self.runs: List[PipelineRun] = []
-        self.series: Dict[str, MetricSeries] = {}
+        self.series: Dict[str, LogEntry] = {}
         self._exporters: Dict[ExportFormat, Any] = {}
         self._lock = threading.Lock()
 
-    def register_series(self, name: str, kind: MetricKind, help_text: str) -> MetricSeries:
+    def register_series(self, name: str, kind: MetricKind, help_text: str) -> LogEntry:
         with self._lock:
             if name in self.series:
                 return self.series[name]
-            series = MetricSeries(name=name, kind=kind, help_text=help_text)
+            series = LogEntry(name=name, kind=kind, help_text=help_text)
             self.series[name] = series
             return series
 

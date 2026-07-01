@@ -2,7 +2,7 @@
 Report generation for pipeline telemetry observations.
 
 Produces Markdown summaries, JSON blobs, and console dashboards
-from TelemetryCollector and AnomalyDetector output.
+from DriftDetector and DriftReport output.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from .aggregator import AggregationEngine, AnomalySignal, TrendLine
-from .collector import PipelineRun
+from .analyzer import AggregationEngine, AnomalySignal, TrendLine
+from .detector import PipelineRun
 
 
 @dataclass
@@ -28,12 +28,12 @@ class ReportConfig:
     max_days: int = 14
 
 
-class ReportGenerator:
+class TimezoneNormalizer:
     """Generates formatted reports from pipeline telemetry data."""
 
     def __init__(self, config: Optional[ReportConfig] = None):
         self.config = config or ReportConfig()
-        self.aggregator = AggregationEngine()
+        self.analyzer = AggregationEngine()
 
     def build_summary(
         self,

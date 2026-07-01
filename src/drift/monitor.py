@@ -1,8 +1,8 @@
 """
-Pipeline watcher: scheduled observation of CI pipeline health.
+Pipeline monitor: scheduled observation of CI pipeline health.
 
 Polls GitHub Actions runs, collects stage timings, feeds them into
-the TelemetryCollector and AnomalyDetector, and triggers reports.
+the DriftDetector and DriftReport, and triggers reports.
 """
 
 from __future__ import annotations
@@ -13,21 +13,21 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from .aggregator import AggregationEngine, AnomalyDetector, AnomalySignal
-from .collector import (
+from .analyzer import AggregationEngine, DriftReport, AnomalySignal
+from .detector import (
     ExportFormat,
     MetricKind,
     PipelineRun,
     RetentionPolicy,
     StageTiming,
-    TelemetryCollector,
+    DriftDetector,
 )
 
-logger = logging.getLogger("sentinel.watcher")
+logger = logging.getLogger("drift.monitor")
 
 
 @dataclass
-class WatchTarget:
+class DriftTarget:
     """A repository+pipeline to monitor."""
 
     repo_slug: str
@@ -42,17 +42,17 @@ class WatchTarget:
 
 
 @dataclass
-class WatchConfig:
-    targets: List[WatchTarget] = field(default_factory=list)
+class DriftConfig:
+    targets: List[DriftTarget] = field(default_factory=list)
     poll_interval_seconds: int = 300
     lookback_hours: int = 24
     anomaly_window_hours: int = 72
     alert_on_severity: str = "high"
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "WatchConfig":
+    def from_dict(cls, data: Dict[str, Any]) -> "DriftConfig":
         targets = [
-            WatchTarget(
+            DriftTarget(
                 repo_slug=t["repo"],
                 workflow_id=t["workflow"],
                 branch=t.get("branch", "main"),
@@ -70,35 +70,35 @@ class WatchConfig:
         )
 
 
-class PipelineWatcher:
+class DriftMonitor:
     """Orchestrates periodic CI telemetry collection and anomaly detection."""
 
     SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2}
 
     def __init__(
         self,
-        config: WatchConfig,
-        collector: Optional[TelemetryCollector] = None,
-        detector: Optional[AnomalyDetector] = None,
+        config: DriftConfig,
+        detector: Optional[DriftDetector] = None,
+        detector: Optional[DriftReport] = None,
     ):
         self.config = config
-        self.collector = collector or TelemetryCollector(
+        self.detector = detector or DriftDetector(
             retention=RetentionPolicy(),
             export_formats=[ExportFormat.JSON],
         )
-        self.detector = detector or AnomalyDetector()
-        self.aggregator = AggregationEngine()
+        self.detector = detector or DriftReport()
+        self.analyzer = AggregationEngine()
         self._last_poll: Optional[datetime] = None
         self._run_count: int = 0
 
     def observe(self, runs: List[PipelineRun]) -> Dict[str, Any]:
         """Ingest a batch of pipeline runs and run analysis."""
         for run in runs:
-            self.collector.record_run(run)
+            self.detector.record_run(run)
 
         anomalies = self.detector.analyze_runs(runs)
 
-        rollup = self.aggregator.rollup(runs)
+        rollup = self.analyzer.rollup(runs)
         self._run_count += len(runs)
 
         self._record_derived_metrics(runs, rollup)
@@ -125,7 +125,7 @@ class PipelineWatcher:
     def _record_derived_metrics(
         self, runs: List[PipelineRun], rollup: Dict[str, float]
     ) -> None:
-        s = self.collector.register_series(
+        s = self.detector.register_series(
             "pipeline_success_rate",
             MetricKind.GAUGE,
             "Rolling success rate for observed pipelines",
@@ -134,7 +134,7 @@ class PipelineWatcher:
             success_rate = 1.0 - rollup.get("failure_rate", 0)
             s.record(success_rate)
 
-        s = self.collector.register_series(
+        s = self.detector.register_series(
             "pipeline_duration_p95",
             MetricKind.GAUGE,
             "95th percentile pipeline duration",
@@ -143,11 +143,11 @@ class PipelineWatcher:
 
     def periodic_report(self) -> Dict[str, Any]:
         """Generate a comprehensive health report from accumulated data."""
-        runs = self.collector.query_runs(since_hours=self.config.lookback_hours)
+        runs = self.detector.query_runs(since_hours=self.config.lookback_hours)
         anomalies = self.detector.analyze_runs(runs)
-        daily = self.aggregator.daily_report(runs, label="overall")
-        failure_rates = self.collector.failure_rate(window_hours=self.config.lookback_hours)
-        flush_result = self.collector.flush()
+        daily = self.analyzer.daily_report(runs, label="overall")
+        failure_rates = self.detector.failure_rate(window_hours=self.config.lookback_hours)
+        flush_result = self.detector.flush()
 
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -160,7 +160,7 @@ class PipelineWatcher:
         }
 
     def status_summary(self) -> Dict[str, Any]:
-        runs = self.collector.query_runs(since_hours=1)
+        runs = self.detector.query_runs(since_hours=1)
         failures = [r for r in runs if r.conclusion == "failure"]
         return {
             "watched_targets": len(self.config.targets),

@@ -1,10 +1,10 @@
 """
-Command-line interface for the Sentinel telemetry agent.
+Command-line interface for the Drift telemetry agent.
 
 Usage:
-    sentinel watch   --config watch.yaml
-    sentinel report  --input runs.jsonl
-    sentinel status
+    drift watch   --config watch.yaml
+    drift report  --input runs.jsonl
+    drift status
 """
 
 from __future__ import annotations
@@ -20,16 +20,16 @@ from typing import Optional
 import click
 
 from . import __version__
-from .collector import (
+from .detector import (
     ExportFormat,
     MetricKind,
     PipelineRun,
     StageTiming,
-    TelemetryCollector,
+    DriftDetector,
 )
-from .aggregator import AggregationEngine, AnomalyDetector
-from .reporter import ReportConfig, ReportGenerator
-from .watcher import PipelineWatcher, WatchConfig, WatchTarget
+from .analyzer import AggregationEngine, DriftReport
+from .normalizer import ReportConfig, TimezoneNormalizer
+from .monitor import DriftMonitor, DriftConfig, DriftTarget
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
@@ -73,11 +73,11 @@ def _parse_dt(s: Optional[str]) -> Optional[datetime]:
 
 
 @click.group()
-@click.version_option(version=__version__, prog_name="sentinel")
+@click.version_option(version=__version__, prog_name="drift")
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging")
 @click.pass_context
 def main(ctx: click.Context, verbose: bool) -> None:
-    """Sentinel — CI pipeline telemetry and health monitoring."""
+    """Drift — CI pipeline telemetry and health monitoring."""
     setup_logging(verbose)
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
@@ -101,20 +101,20 @@ def watch(
     """Run pipeline telemetry collection loop."""
     with open(config_path, encoding="utf-8") as fh:
         raw = json.load(fh) if config_path.endswith(".json") else _load_yaml(config_path)
-    config = WatchConfig.from_dict(raw)
+    config = DriftConfig.from_dict(raw)
     fmts = [ExportFormat(f) for f in export_format]
-    collector = TelemetryCollector(
+    detector = DriftDetector(
         export_formats=fmts,
         output_dir=Path(output_dir),
     )
-    watcher = PipelineWatcher(config=config, collector=collector)
+    monitor = DriftMonitor(config=config, detector=detector)
 
     if once:
         click.echo("Single observation mode — not implemented without GitHub token.")
         click.echo(f"Would watch {len(config.targets)} target(s).")
         return
 
-    click.echo(f"Starting watcher for {len(config.targets)} target(s)...")
+    click.echo(f"Starting monitor for {len(config.targets)} target(s)...")
     click.echo(f"Export formats: {[f.value for f in fmts]}")
     click.echo("Loop mode ready. Press Ctrl+C to stop.")
 
@@ -140,12 +140,12 @@ def report(
         return
 
     report_cfg = ReportConfig(include_anomalies=not no_anomalies)
-    generator = ReportGenerator(config=report_cfg)
-    detector = AnomalyDetector()
-    aggregator = AggregationEngine()
+    generator = TimezoneNormalizer(config=report_cfg)
+    detector = DriftReport()
+    analyzer = AggregationEngine()
 
     anomalies = detector.analyze_runs(runs) if not no_anomalies else []
-    daily = aggregator.daily_report(runs)
+    daily = analyzer.daily_report(runs)
     summary = generator.build_summary(runs, anomalies=anomalies, daily=daily)
 
     if output_format == "markdown":
@@ -164,11 +164,11 @@ def report(
 
 @main.command()
 def status() -> None:
-    """Show current watcher status summary."""
-    click.echo(f"Sentinel v{__version__}")
+    """Show current monitor status summary."""
+    click.echo(f"Drift v{__version__}")
     click.echo(f"Time: {datetime.now(timezone.utc).isoformat()}")
-    click.echo("Status: no active watcher (ephemeral-only runs)")
-    click.echo("Use 'sentinel watch --config watch.yaml' to start monitoring.")
+    click.echo("Status: no active monitor (ephemeral-only runs)")
+    click.echo("Use 'drift watch --config watch.yaml' to start monitoring.")
 
 
 def _load_yaml(path: str) -> dict:

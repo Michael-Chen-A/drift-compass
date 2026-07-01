@@ -1,4 +1,4 @@
-_rt/
+# drift compass -- exclude parsed logs, __pycache__/
 __pycache__/
 *.pyc
 .DS_Store
